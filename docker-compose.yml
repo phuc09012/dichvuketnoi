@@ -15,6 +15,16 @@ services:
     networks:
       - team-internal
 
+  mqtt:
+    image: eclipse-mosquitto:2
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    restart: unless-stopped
+    networks:
+      - team-internal
+
   ai:
     build: .
     command: ["uvicorn", "app.ai_mock:app", "--host", "0.0.0.0", "--port", "9000"]
@@ -38,11 +48,19 @@ services:
     environment:
       AI_SERVICE_URL: http://ai:9000
       DATABASE_URL: postgresql://${POSTGRES_USER:-camera}:${POSTGRES_PASSWORD:-camera}@db:5432/${POSTGRES_DB:-camera}
+      MQTT_ENABLED: ${MQTT_ENABLED:-true}
+      MQTT_BROKER_HOST: ${MQTT_BROKER_HOST:-mqtt}
+      MQTT_BROKER_PORT: ${MQTT_BROKER_PORT:-1883}
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      MQTT_TOPIC_CAMERA_EVENTS: ${MQTT_TOPIC_CAMERA_EVENTS:-smart-campus/events/camera}
     depends_on:
       db:
         condition: service_healthy
       ai:
         condition: service_healthy
+      mqtt:
+        condition: service_started
     ports:
       - "8000:8000"
     healthcheck:
@@ -56,4 +74,3 @@ services:
 networks:
   team-internal:
     driver: bridge
-

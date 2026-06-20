@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     ai_auth_header_name: str = Field(default="", alias="AI_AUTH_HEADER_NAME")
     ai_auth_header_value: str = Field(default="", alias="AI_AUTH_HEADER_VALUE")
     public_base_url: str = Field(default="", alias="PUBLIC_BASE_URL")
+    camera_cooldown_seconds: float = Field(default=8.0, alias="CAMERA_COOLDOWN_SECONDS")
+    mqtt_enabled: bool = Field(default=False, alias="MQTT_ENABLED")
+    mqtt_broker_host: str = Field(default="", alias="MQTT_BROKER_HOST")
+    mqtt_broker_port: int = Field(default=1883, alias="MQTT_BROKER_PORT")
+    mqtt_username: str = Field(default="", alias="MQTT_USERNAME")
+    mqtt_password: str = Field(default="", alias="MQTT_PASSWORD")
+    mqtt_topic_camera_events: str = Field(default="smart-campus/events/camera", alias="MQTT_TOPIC_CAMERA_EVENTS")
     database_url: str = Field(default="postgresql://camera:camera@db:5432/camera", alias="DATABASE_URL")
     http_timeout: float = Field(default=5.0, alias="HTTP_TIMEOUT")
 

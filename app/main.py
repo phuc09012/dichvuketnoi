@@ -19,6 +19,8 @@ from app.services.camera import (
     motion_probe_camera,
     parse_peer_endpoints,
     probe_camera,
+    mark_ai_called,
+    should_call_ai,
 )
 
 settings = get_settings()
@@ -87,6 +89,19 @@ async def peer_check(payload: PeerCheckRequest) -> dict[str, Any]:
 
 @app.post("/detect")
 async def detect(payload: DetectRequest) -> Any:
+    if not payload.motion_detected:
+        return mock_detect(payload)
+
+    if not should_call_ai(payload.camera_id, settings.camera_cooldown_seconds):
+        return {
+            "request_id": payload.request_id,
+            "camera_id": payload.camera_id,
+            "status": "throttled",
+            "reason": "camera_cooldown_active",
+            "cooldown_seconds": settings.camera_cooldown_seconds,
+            "timestamp": utc_now(),
+        }
+
     if settings.ai_service_url:
         try:
             forwarded = await forward_detect_request(
@@ -101,4 +116,6 @@ async def detect(payload: DetectRequest) -> Any:
             return forwarded
         except Exception:
             pass
+        finally:
+            mark_ai_called(payload.camera_id)
     return mock_detect(payload)

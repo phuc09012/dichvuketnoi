@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import base64
+import json
+import logging
 import socket
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from io import BytesIO
@@ -13,6 +16,14 @@ from urllib.request import Request, urlopen
 from PIL import Image, ImageChops, ImageStat
 
 from app.config import Settings
+
+try:
+    import paho.mqtt.client as mqtt
+except Exception:  # pragma: no cover - optional dependency
+    mqtt = None
+
+logger = logging.getLogger(__name__)
+_LAST_AI_CALL_AT: dict[str, float] = {}
 
 
 @dataclass(frozen=True)
@@ -116,6 +127,42 @@ def build_snapshot_url(public_base_url: str, snapshot_path: str | Path) -> str |
 
 def encode_image_base64(image_bytes: bytes) -> str:
     return base64.b64encode(image_bytes).decode("ascii")
+
+
+def should_call_ai(camera_id: str, cooldown_seconds: float) -> bool:
+    last_called_at = _LAST_AI_CALL_AT.get(camera_id)
+    if last_called_at is None:
+        return True
+    return (time.time() - last_called_at) >= cooldown_seconds
+
+
+def mark_ai_called(camera_id: str) -> None:
+    _LAST_AI_CALL_AT[camera_id] = time.time()
+
+
+def publish_camera_event(settings: Settings, event: dict[str, Any]) -> dict[str, Any]:
+    if not settings.mqtt_enabled:
+        return {"ok": False, "message": "mqtt_disabled"}
+    if not settings.mqtt_broker_host:
+        return {"ok": False, "message": "mqtt_broker_missing"}
+    if mqtt is None:
+        return {"ok": False, "message": "paho_mqtt_not_installed"}
+
+    client = mqtt.Client()
+    if settings.mqtt_username:
+        client.username_pw_set(settings.mqtt_username, settings.mqtt_password or None)
+
+    try:
+        client.connect(settings.mqtt_broker_host, settings.mqtt_broker_port, keepalive=30)
+        client.loop_start()
+        result = client.publish(settings.mqtt_topic_camera_events, json.dumps(event, ensure_ascii=False), qos=1)
+        result.wait_for_publish(timeout=5)
+        client.loop_stop()
+        client.disconnect()
+        return {"ok": True, "topic": settings.mqtt_topic_camera_events}
+    except Exception as exc:
+        logger.exception("Failed to publish camera event")
+        return {"ok": False, "message": str(exc)}
 
 
 def compute_motion_score(previous_jpeg: bytes, current_jpeg: bytes) -> float:
@@ -222,7 +269,7 @@ def build_trigger_payload(settings: Settings) -> dict[str, Any]:
         snapshot_path_value = probe.get("snapshot_path")
         if snapshot_path_value:
             image_base64 = encode_image_base64(Path(snapshot_path_value).read_bytes())
-    return {
+    event = {
         "status": "ok" if probe.get("ok") else "warning",
         "event_type": "camera.motion.triggered" if probe.get("motion_detected") else "camera.motion.skipped",
         "request_id": f"vision-request-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
@@ -234,3 +281,5 @@ def build_trigger_payload(settings: Settings) -> dict[str, Any]:
         "image_base64": image_base64,
         "probe": probe,
     }
+    event["mqtt_publish"] = publish_camera_event(settings, event)
+    return event

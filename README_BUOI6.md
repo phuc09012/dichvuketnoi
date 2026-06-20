@@ -34,6 +34,8 @@ Luồng xử lý của A2:
 5. Tạo `snapshot_url` để nhóm khác xem được ảnh.
 6. Gửi request sang nhóm AI Vision qua REST API.
 7. Dùng timeout và header xác thực khi gọi dịch vụ đối tác.
+8. Có cooldown để tránh gọi AI Vision liên tục.
+9. Có thể publish event camera sang MQTT cho Analytics.
 
 ## 4. Output
 
@@ -89,6 +91,7 @@ Repo có:
 
 - `Dockerfile`
 - `docker-compose.yml`
+- broker MQTT nội bộ cho demo
 - `.env.example`
 - non-root user trong container
 - healthcheck cho API
@@ -125,6 +128,7 @@ Service đã có schema validation cho request camera và request gửi sang AI 
 
 - timeout khi đọc camera stream
 - timeout khi gọi peer
+- cooldown để không gọi AI quá dày
 - thông báo lỗi rõ ràng
 - handler tránh crash khi payload không hợp lệ
 
@@ -173,6 +177,7 @@ Kịch bản nói ngắn gọn:
 - `GET /camera/motion`
 - `GET /camera/trigger`
 - `POST /detect`
+- publish event camera sang MQTT khi bật cấu hình
 - `GET /peers`
 - `POST /peer-check`
 
