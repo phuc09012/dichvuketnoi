@@ -1,0 +1,59 @@
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-camera}
+      POSTGRES_USER: ${POSTGRES_USER:-camera}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-camera}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-camera} -d ${POSTGRES_DB:-camera}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - team-internal
+
+  ai:
+    build: .
+    command: ["uvicorn", "app.ai_mock:app", "--host", "0.0.0.0", "--port", "9000"]
+    environment:
+      PYTHONUNBUFFERED: 1
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=3).status)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - team-internal
+
+  api:
+    build: .
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file:
+      - .env
+    environment:
+      AI_SERVICE_URL: http://ai:9000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-camera}:${POSTGRES_PASSWORD:-camera}@db:5432/${POSTGRES_DB:-camera}
+    depends_on:
+      db:
+        condition: service_healthy
+      ai:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).status)\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - team-internal
+
+networks:
+  team-internal:
+    driver: bridge
+

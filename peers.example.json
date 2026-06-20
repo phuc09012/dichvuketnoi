@@ -1,0 +1,10 @@
+[
+  {
+    "name": "ai-vision",
+    "url": "http://172.20.10.10:8000/health"
+  },
+  {
+    "name": "core-business",
+    "url": "http://172.20.10.11:8000/health"
+  }
+]

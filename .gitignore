@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+peers.json
+venv/
+.venv/
+snapshots/
+snapshots_test/
+snapshots_test2/
+reports/
+dist/
+build/
+.pytest_cache/
+*.log

@@ -1,0 +1,122 @@
+{
+  "info": {
+    "name": "Camera A2 API",
+    "_postman_id": "d3e1f5c4-5f2c-4d9d-9b2b-0c4ccf7f0001",
+    "description": "Camera Stream A2 contract collection.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Health GET",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('service ok', function () { pm.expect(pm.response.json().status).to.eql('ok'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health HEAD",
+      "request": {
+        "method": "HEAD",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Detect POST valid",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"request_id\": \"vision-request-001\",\n  \"camera_id\": \"cam-gate-a\",\n  \"timestamp\": \"2026-06-07T14:30:10+07:00\",\n  \"location\": \"Main Gate A\",\n  \"motion_detected\": true,\n  \"motion_score\": 0.82,\n  \"snapshot_url\": \"http://team-camera/snapshots/cam-gate-a/20260607_143010.jpg\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/detect",
+          "host": ["{{baseUrl}}"],
+          "path": ["detect"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('status 200', function () { pm.response.to.have.status(200); });",
+              "pm.test('has request id', function () { pm.expect(pm.response.json().request_id).to.eql('vision-request-001'); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Detect POST invalid",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"camera_id\": \"cam-gate-a\"\n}"
+        },
+        "url": {
+          "raw": "{{baseUrl}}/detect",
+          "host": ["{{baseUrl}}"],
+          "path": ["detect"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('status 400', function () { pm.response.to.have.status(400); });"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    }
+  ]
+}
