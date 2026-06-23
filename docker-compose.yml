@@ -45,6 +45,8 @@ services:
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file:
       - .env
+    volumes:
+      - ./snapshots:/app/snapshots
     environment:
       AI_SERVICE_URL: http://ai:9000
       DATABASE_URL: postgresql://${POSTGRES_USER:-camera}:${POSTGRES_PASSWORD:-camera}@db:5432/${POSTGRES_DB:-camera}
