@@ -1,22 +1,27 @@
 const state = {
   runtime: null,
-  lastResult: null,
-  lastTrigger: null,
+  latestResponse: null,
+  latestTrigger: null,
+  monitoring: false,
+  monitorTimer: null,
+  monitorBusy: false,
+  autoSendBusy: false,
 };
 
 const $ = (id) => document.getElementById(id);
 
 const els = {
-  statusChip: $("statusChip"),
+  statusPill: $("statusPill"),
+  noticeBar: $("noticeBar"),
   localIp: $("localIp"),
   cameraId: $("cameraId"),
   aiStatus: $("aiStatus"),
-  mqttStatus: $("mqttStatus"),
   motionThreshold: $("motionThreshold"),
   cooldown: $("cooldown"),
   publicBase: $("publicBase"),
+  mqttBadge: $("mqttBadge"),
+  motionBadge: $("motionBadge"),
   lastEvent: $("lastEvent"),
-  motionState: $("motionState"),
   snapshotImg: $("snapshotImg"),
   snapshotEmpty: $("snapshotEmpty"),
   snapshotLink: $("snapshotLink"),
@@ -24,7 +29,6 @@ const els = {
   responseJson: $("responseJson"),
   snapshotGrid: $("snapshotGrid"),
   snapshotCount: $("snapshotCount"),
-  detectInput: $("detectInput"),
   peersInput: $("peersInput"),
 };
 
@@ -32,30 +36,49 @@ function pretty(value) {
   return JSON.stringify(value, null, 2);
 }
 
-function setResult(value) {
-  state.lastResult = value;
+function setResponse(value) {
+  state.latestResponse = value;
   els.responseJson.textContent = typeof value === "string" ? value : pretty(value);
 }
 
 function setStatus(text, kind = "ok") {
-  els.statusChip.textContent = text;
-  els.statusChip.classList.toggle("error", kind === "error");
+  els.statusPill.textContent = text;
+  els.statusPill.classList.toggle("error", kind === "error");
 }
 
-function setSnapshot(url, label = "Latest snapshot") {
+function setNotice(text, kind = "info") {
+  els.noticeBar.textContent = text;
+  els.noticeBar.classList.toggle("success", kind === "success");
+  els.noticeBar.classList.toggle("error", kind === "error");
+  els.noticeBar.classList.toggle("info", kind === "info");
+}
+
+function setLatestSnapshot(url, label) {
   if (!url) {
-    els.snapshotImg.style.display = "none";
-    els.snapshotEmpty.style.display = "block";
     els.snapshotLink.textContent = "-";
     els.snapshotLink.href = "#";
+    els.lastEvent.textContent = "-";
     return;
   }
-  els.snapshotImg.src = url;
-  els.snapshotImg.style.display = "block";
-  els.snapshotEmpty.style.display = "none";
   els.snapshotLink.textContent = url;
   els.snapshotLink.href = url;
-  els.lastEvent.textContent = label;
+  els.lastEvent.textContent = label || "-";
+}
+
+function buildDetectPayload(trigger) {
+  const fallback = state.runtime?.snapshots?.recent?.[0];
+  const snapshotUrl = trigger?.snapshot_url || fallback?.public_url || fallback?.url;
+  const snapshotPath = trigger?.snapshot_path || trigger?.probe?.snapshot_path || null;
+  return {
+    request_id: trigger?.request_id || "vision-request-demo",
+    camera_id: trigger?.camera_id || state.runtime?.camera?.id || "cam-gate-a",
+    timestamp: trigger?.timestamp || new Date().toISOString(),
+    location: trigger?.location || state.runtime?.camera?.location || "Main Gate A",
+    motion_detected: true,
+    motion_score: trigger?.motion_score ?? trigger?.probe?.motion_score ?? 0.0,
+    snapshot_url: snapshotUrl,
+    snapshot_path: snapshotPath,
+  };
 }
 
 async function requestJson(url, options = {}) {
@@ -71,44 +94,39 @@ async function requestJson(url, options = {}) {
   return payload;
 }
 
-function updateSummary(runtime) {
+function updateRuntime(runtime) {
   state.runtime = runtime;
   els.runtimeJson.textContent = pretty(runtime);
   els.localIp.textContent = runtime.local_ip || "-";
   els.cameraId.textContent = runtime.camera?.id || "-";
   els.aiStatus.textContent = runtime.ai?.service_url || "-";
-  els.mqttStatus.textContent = runtime.mqtt?.enabled ? `${runtime.mqtt.broker_host || "-"}:${runtime.mqtt.broker_port}` : "disabled";
   els.motionThreshold.textContent = runtime.camera?.motion_threshold ?? "-";
   els.cooldown.textContent = runtime.ai?.cooldown_seconds ?? "-";
   els.publicBase.textContent = runtime.network?.public_base_url || "-";
-  els.detectInput.value = pretty({
-    request_id: "vision-request-demo",
-    camera_id: runtime.camera?.id || "cam-gate-a",
-    timestamp: new Date().toISOString(),
-    location: runtime.camera?.location || "Main Gate A",
-    motion_detected: true,
-    motion_score: 0.82,
-    image_url: runtime.snapshots?.recent?.[0]?.public_url || runtime.snapshots?.recent?.[0]?.url || "",
-  });
+  els.mqttBadge.textContent = runtime.mqtt?.enabled
+    ? `MQTT: ${runtime.mqtt.broker_host || "-"}:${runtime.mqtt.broker_port}`
+    : "MQTT: off";
+  const snap = runtime.snapshots?.recent?.[0];
+  if (snap) {
+    const url = snap.public_url || snap.url;
+    setLatestSnapshot(url, snap.name);
+  }
+  els.motionBadge.textContent = runtime.camera?.motion_threshold != null
+    ? `Threshold ${runtime.camera.motion_threshold}`
+    : "Motion: -";
 }
 
-async function refreshRuntime() {
+async function loadRuntime() {
   const runtime = await requestJson("/api/runtime");
-  updateSummary(runtime);
-  await loadSnapshots();
-  setStatus("Dashboard ready", "ok");
+  updateRuntime(runtime);
+  return runtime;
 }
 
 async function loadHealth() {
   const health = await requestJson("/health");
   setStatus(`Healthy: ${health.service}`, "ok");
-  setResult(health);
-}
-
-async function loadPeers() {
-  const peers = await requestJson("/peers");
-  setResult(peers);
-  return peers;
+  setNotice("Service đang hoạt động bình thường.", "info");
+  setResponse(health);
 }
 
 async function loadSnapshots() {
@@ -117,61 +135,120 @@ async function loadSnapshots() {
   els.snapshotCount.textContent = `${items.length} items`;
   els.snapshotGrid.innerHTML = "";
   if (!items.length) {
-    els.snapshotGrid.innerHTML = `<div class="muted">Chưa có snapshot nào.</div>`;
+    els.snapshotGrid.innerHTML = `<div class="muted">Chưa có snapshot.</div>`;
     return;
   }
+
   const fragment = document.createDocumentFragment();
   for (const item of items) {
     const link = document.createElement("a");
-    link.className = "snapshot-item";
+    link.className = "snap";
     link.href = item.url;
     link.target = "_blank";
     link.rel = "noreferrer";
     link.innerHTML = `
       <img src="${item.url}" alt="${item.name}" loading="lazy" />
-      <div class="snapshot-caption">
+      <div class="snap-meta">
         <strong>${item.name}</strong>
         <span>${item.modified_at}</span>
       </div>
     `;
-    link.addEventListener("click", () => setSnapshot(item.url, item.name));
+    link.addEventListener("click", () => setLatestSnapshot(item.url, item.name));
     fragment.appendChild(link);
   }
   els.snapshotGrid.appendChild(fragment);
 }
 
-async function triggerCamera() {
-  setStatus("Triggering camera...", "ok");
+async function captureCamera() {
+  setStatus("Capturing...", "ok");
+  setNotice("Đang chụp ảnh từ camera...", "info");
   const trigger = await requestJson("/camera/trigger");
-  state.lastTrigger = trigger;
-  setResult(trigger);
-  const snapshotUrl = trigger.snapshot_url || trigger.probe?.snapshot_path || null;
-  setSnapshot(snapshotUrl, `${trigger.event_type} • ${trigger.request_id}`);
-  if (trigger.motion_detected !== undefined) {
-    els.motionState.textContent = trigger.motion_detected ? `Motion ${trigger.motion_score}` : `No motion (${trigger.motion_score})`;
-  } else if (trigger.probe) {
-    els.motionState.textContent = trigger.probe.motion_detected ? `Motion ${trigger.probe.motion_score}` : `No motion (${trigger.probe.motion_score})`;
-  }
-  await refreshRuntime();
+  state.latestTrigger = trigger;
+  setResponse(trigger);
+  const snapshotUrl = trigger.snapshot_url || trigger.probe?.snapshot_path;
+  setLatestSnapshot(snapshotUrl, `${trigger.event_type} • ${trigger.request_id}`);
+  const motionDetected = trigger.motion_detected ?? trigger.probe?.motion_detected;
+  const score = trigger.motion_score ?? trigger.probe?.motion_score;
+  els.motionBadge.textContent = motionDetected === undefined
+    ? "Motion: -"
+    : motionDetected
+      ? `Motion: yes (${score})`
+      : `Motion: no (${score})`;
+  await loadRuntime();
 }
 
-async function cameraCheck() {
-  const result = await requestJson("/camera/check");
-  setResult(result);
-  if (result.snapshot_path) {
-    setSnapshot(`/snapshots/${result.snapshot_path.replace(/\\/g, "/").replace(/^snapshots\//, "")}`, "camera.check");
-  }
-  await refreshRuntime();
-}
-
-async function motionScan() {
+async function runMotionScan() {
+  setStatus("Scanning motion...", "ok");
+  setNotice("Đang quét motion...", "info");
   const result = await requestJson("/camera/motion");
-  setResult(result);
+  setResponse(result);
   if (result.snapshot_path) {
-    setSnapshot(`/snapshots/${result.snapshot_path.replace(/\\/g, "/").replace(/^snapshots\//, "")}`, "camera.motion");
+    setLatestSnapshot(`/snapshots/${result.snapshot_path.replace(/\\/g, "/").replace(/^snapshots\//, "")}`, "camera.motion");
   }
-  els.motionState.textContent = result.motion_detected ? `Motion ${result.motion_score}` : `No motion (${result.motion_score})`;
-  await refreshRuntime();
+  els.motionBadge.textContent = result.motion_detected
+    ? `Motion: yes (${result.motion_score})`
+    : `Motion: no (${result.motion_score})`;
+  await loadRuntime();
+}
+
+async function sendToAi(triggerOverride = null) {
+  const trigger = triggerOverride || state.latestTrigger || await requestJson("/camera/trigger");
+  const payload = buildDetectPayload(trigger);
+  setStatus("Sending to AI...", "ok");
+  setNotice("Đang gửi ảnh sang AI Vision...", "info");
+  const result = await requestJson("/detect", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  setResponse(result);
+  setStatus("Sent successfully", "ok");
+  setNotice("Đã gửi thành công sang AI Vision.", "success");
+  return result;
+}
+
+async function monitorMotionOnce() {
+  if (state.monitorBusy) return;
+  state.monitorBusy = true;
+  try {
+    const result = await requestJson("/camera/motion");
+    state.latestTrigger = result;
+    setResponse(result);
+    if (result.snapshot_path) {
+      setLatestSnapshot(`/snapshots/${result.snapshot_path.replace(/\\/g, "/").replace(/^snapshots\//, "")}`, "camera.motion");
+    }
+    els.motionBadge.textContent = result.motion_detected
+      ? `Motion: yes (${result.motion_score})`
+      : `Motion: no (${result.motion_score})`;
+    if (result.motion_detected) {
+      setStatus("Motion detected", "ok");
+      setNotice("Phát hiện motion, đang gửi sang AI Vision...", "info");
+      if (!state.autoSendBusy) {
+        state.autoSendBusy = true;
+        try {
+          await sendToAi(result);
+        } finally {
+          state.autoSendBusy = false;
+        }
+      }
+    }
+  } catch (error) {
+    setStatus("Request failed", "error");
+    setNotice("Không quét được motion.", "error");
+    setResponse({ error: String(error.message || error) });
+  } finally {
+    state.monitorBusy = false;
+  }
+}
+
+function startLiveMonitor() {
+  if (state.monitoring) return;
+  state.monitoring = true;
+  setStatus("Live", "ok");
+  setNotice("Camera đang chạy live, tự quét motion và tự gửi khi có chuyển động.", "info");
+  monitorMotionOnce();
+  state.monitorTimer = setInterval(() => {
+    monitorMotionOnce();
+  }, 5000);
 }
 
 async function peerCheck() {
@@ -180,100 +257,67 @@ async function peerCheck() {
     method: "POST",
     body: JSON.stringify({ peers }),
   });
-  setResult(result);
+  setResponse(result);
+  setNotice("Peer check đã chạy xong.", "success");
 }
 
-async function sendDetect() {
-  const payload = JSON.parse(els.detectInput.value);
-  if (!payload.image_url && !payload.snapshot_url && !payload.image_base64) {
-    const latest = state.lastTrigger?.snapshot_url || state.runtime?.snapshots?.recent?.[0]?.public_url || state.runtime?.snapshots?.recent?.[0]?.url;
-    payload.image_url = latest;
-  }
-  const result = await requestJson("/detect", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  setResult(result);
+function copyJson() {
+  navigator.clipboard.writeText(els.responseJson.textContent).catch(() => {});
 }
 
-function copyText(text) {
-  navigator.clipboard.writeText(text).catch(() => {});
-}
-
-function bindButton(id, handler) {
-  const element = $(id);
-  if (!element) return;
-  element.addEventListener("click", async () => {
-    element.disabled = true;
+function wireButton(id, handler) {
+  const btn = $(id);
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
     try {
       await handler();
     } catch (error) {
       setStatus("Request failed", "error");
-      setResult({ error: String(error.message || error) });
+      setNotice("Có lỗi khi gửi hoặc gọi API.", "error");
+      setResponse({ error: String(error.message || error) });
     } finally {
-      element.disabled = false;
+      btn.disabled = false;
     }
   });
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  bindButton("refreshBtn", refreshRuntime);
-  bindButton("triggerBtn", triggerCamera);
-  bindButton("motionBtn", motionScan);
-  bindButton("cameraCheckBtn", cameraCheck);
-  bindButton("peerBtn", loadPeers);
-  bindButton("runPeerCheck", peerCheck);
-  bindButton("runDetect", sendDetect);
-  bindButton("detectBtn", sendDetect);
-  bindButton("snapshotsBtn", loadSnapshots);
-  bindButton("copyPayload", () => copyText(els.detectInput.value));
-  bindButton("copyResult", () => copyText(els.responseJson.textContent));
-
-  document.querySelectorAll("[data-action]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      try {
-        switch (button.dataset.action) {
-          case "health":
-            await loadHealth();
-            break;
-          case "trigger":
-            await triggerCamera();
-            break;
-          case "motion":
-            await motionScan();
-            break;
-          case "detect":
-            await sendDetect();
-            break;
-          case "peercheck":
-            await peerCheck();
-            break;
-          case "snapshots":
-            await loadSnapshots();
-            break;
-        }
-      } catch (error) {
-        setStatus("Request failed", "error");
-        setResult({ error: String(error.message || error) });
-      } finally {
-        button.disabled = false;
-      }
-    });
+  els.snapshotImg.src = "/camera/live";
+  els.snapshotImg.addEventListener("load", () => {
+    els.snapshotImg.style.display = "block";
+    els.snapshotEmpty.style.display = "none";
+  });
+  els.snapshotImg.addEventListener("error", () => {
+    els.snapshotEmpty.style.display = "block";
+    els.snapshotEmpty.innerHTML = "Live feed chưa tải được. Kiểm tra camera stream hoặc refresh lại trang.";
   });
 
-  try {
-    await refreshRuntime();
+  wireButton("captureBtn", captureCamera);
+  wireButton("motionBtn", runMotionScan);
+  wireButton("sendAiBtn", sendToAi);
+  wireButton("refreshBtn", async () => {
+    await loadRuntime();
     await loadHealth();
-    await loadPeers();
+    await loadSnapshots();
+  });
+  wireButton("peerCheckBtn", peerCheck);
+  wireButton("loadSnapshotsBtn", loadSnapshots);
+  wireButton("copyResultBtn", copyJson);
+
+  try {
+    await loadRuntime();
+    await loadHealth();
+    await loadSnapshots();
+    setLatestSnapshot("/camera/live", "Live feed");
+    startLiveMonitor();
   } catch (error) {
     setStatus("Startup failed", "error");
-    setResult({ error: String(error.message || error) });
+    setNotice("Không khởi động được dashboard.", "error");
+    setResponse({ error: String(error.message || error) });
   }
 
   setInterval(() => {
-    if (state.runtime) {
-      refreshRuntime().catch(() => {});
-    }
+    loadRuntime().catch(() => {});
   }, 30000);
 });

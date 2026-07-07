@@ -3,182 +3,139 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Camera Stream Control Room</title>
+  <title>Camera Dashboard</title>
   <link rel="stylesheet" href="/web/styles.css" />
 </head>
 <body>
-  <div class="bg-orb bg-orb-a"></div>
-  <div class="bg-orb bg-orb-b"></div>
-  <div class="shell">
-    <header class="hero">
-      <div class="hero-copy">
+  <div class="bg bg-a"></div>
+  <div class="bg bg-b"></div>
+
+  <div class="page">
+    <header class="topbar card">
+      <div>
         <p class="eyebrow">Smart Campus / Camera Stream</p>
-        <h1>Control Room</h1>
-        <p class="lede">
-          Một trang điều khiển riêng cho toàn bộ luồng camera: kiểm tra health, chụp snapshot, gửi sang AI Vision,
-          thử peer, xem MQTT/Core và mở nhanh ảnh mới nhất.
+        <h1>Camera Dashboard</h1>
+        <p class="subtitle">
+          Trang điều khiển gọn cho camera: chụp ảnh, scan motion, gửi sang AI Vision và kiểm tra kết nối.
         </p>
-        <div class="hero-actions">
-          <button class="primary" id="refreshBtn">Refresh dashboard</button>
-          <button class="ghost" id="triggerBtn">Trigger camera</button>
-          <button class="ghost" id="motionBtn">Motion scan</button>
+      </div>
+      <div class="topbar-meta">
+        <div class="pill" id="statusPill">Loading...</div>
+        <div class="small-meta">
+          <span>Local IP</span>
+          <strong id="localIp">-</strong>
+        </div>
+        <div class="small-meta">
+          <span>Camera</span>
+          <strong id="cameraId">-</strong>
         </div>
       </div>
-      <aside class="hero-panel">
-        <div class="status-chip" id="statusChip">Loading...</div>
-        <div class="status-grid">
-          <div class="stat-card">
-            <span>Local IP</span>
-            <strong id="localIp">-</strong>
-          </div>
-          <div class="stat-card">
-            <span>Camera</span>
-            <strong id="cameraId">-</strong>
-          </div>
-          <div class="stat-card">
-            <span>AI Vision</span>
-            <strong id="aiStatus">-</strong>
-          </div>
-          <div class="stat-card">
-            <span>MQTT</span>
-            <strong id="mqttStatus">-</strong>
-          </div>
-        </div>
-      </aside>
     </header>
 
-    <main class="grid">
-      <section class="panel panel-preview">
-        <div class="panel-head">
+    <div class="notice card" id="noticeBar" aria-live="polite">
+      Chưa có thao tác nào.
+    </div>
+
+    <main class="layout">
+      <section class="card hero">
+        <div class="hero-head">
           <div>
-            <p class="panel-kicker">Live</p>
-            <h2>Snapshot & Trigger</h2>
+            <p class="section-kicker">Preview</p>
+            <h2>Live feed</h2>
           </div>
-          <div class="panel-actions">
-            <button class="ghost" id="cameraCheckBtn">Camera check</button>
-            <button class="ghost" id="peerBtn">Load peers</button>
-          </div>
-        </div>
-
-        <div class="preview">
-          <div class="preview-frame">
-            <img id="snapshotImg" alt="Snapshot preview" />
-            <div class="preview-empty" id="snapshotEmpty">
-              Chưa có ảnh. Bấm <strong>Trigger camera</strong> để chụp snapshot mới nhất.
-            </div>
-          </div>
-          <div class="preview-meta">
-            <div>
-              <span>Snapshot URL</span>
-              <a id="snapshotLink" href="#" target="_blank" rel="noreferrer">-</a>
-            </div>
-            <div>
-              <span>Last event</span>
-              <strong id="lastEvent">-</strong>
-            </div>
-            <div>
-              <span>Motion</span>
-              <strong id="motionState">-</strong>
-            </div>
+          <div class="status-row">
+            <span class="badge" id="motionBadge">Motion: -</span>
+            <span class="badge muted" id="mqttBadge">MQTT: -</span>
           </div>
         </div>
 
-        <div class="mini-grid">
-          <div class="mini-card">
-            <span>Threshold</span>
-            <strong id="motionThreshold">-</strong>
+        <div class="preview-frame">
+          <img id="snapshotImg" alt="Snapshot preview" />
+          <div class="preview-empty" id="snapshotEmpty">
+            Live feed đang khởi động. Nếu không thấy hình, thử refresh hoặc kiểm tra stream camera.
           </div>
-          <div class="mini-card">
-            <span>Cooldown</span>
-            <strong id="cooldown">-</strong>
-          </div>
-          <div class="mini-card">
-            <span>Public base</span>
-            <strong id="publicBase">-</strong>
-          </div>
+        </div>
+
+        <div class="preview-links">
+          <a id="snapshotLink" href="#" target="_blank" rel="noreferrer">-</a>
+          <span id="lastEvent" class="muted">-</span>
         </div>
       </section>
 
-      <section class="panel">
-        <div class="panel-head">
-          <div>
-            <p class="panel-kicker">Workflow</p>
-            <h2>Actions</h2>
+      <aside class="card sidebar">
+        <div class="sidebar-grid">
+          <div class="info-card">
+            <span>AI Vision</span>
+            <strong id="aiStatus">-</strong>
           </div>
-          <div class="panel-actions">
-            <button class="ghost" id="detectBtn">Send to AI</button>
-            <button class="ghost" id="snapshotsBtn">Load snapshots</button>
+          <div class="info-card">
+            <span>Threshold</span>
+            <strong id="motionThreshold">-</strong>
+          </div>
+          <div class="info-card">
+            <span>Cooldown</span>
+            <strong id="cooldown">-</strong>
+          </div>
+          <div class="info-card">
+            <span>Public URL</span>
+            <strong id="publicBase">-</strong>
           </div>
         </div>
 
         <div class="actions">
-          <button data-action="health">Health</button>
-          <button data-action="trigger">Trigger + MQTT</button>
-          <button data-action="motion">Motion probe</button>
-          <button data-action="detect">Forward detect</button>
-          <button data-action="peercheck">Peer check</button>
-          <button data-action="snapshots">Recent snapshots</button>
+          <button class="primary" id="captureBtn">Chụp ảnh</button>
+          <button class="primary" id="motionBtn">Scan motion</button>
+          <button class="secondary" id="sendAiBtn">Gửi sang AI</button>
+          <button class="secondary" id="refreshBtn">Refresh</button>
         </div>
 
-        <div class="section-divider"></div>
-
-        <div class="form-stack">
-          <label class="field">
-            <span>Peers JSON</span>
-            <textarea id="peersInput" rows="7" spellcheck="false">[
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <div class="advanced-body">
+            <div class="field">
+              <label>Peers JSON</label>
+              <textarea id="peersInput" rows="6" spellcheck="false">[
   {"name":"ai-vision","url":"http://26.15.57.238:8000/health"}
 ]</textarea>
-          </label>
-
-          <label class="field">
-            <span>Manual detect payload</span>
-            <textarea id="detectInput" rows="10" spellcheck="false"></textarea>
-          </label>
-        </div>
-
-        <div class="button-row">
-          <button class="primary" id="runPeerCheck">Run peer-check</button>
-          <button class="primary" id="runDetect">POST /detect</button>
-          <button class="ghost" id="copyPayload">Copy payload</button>
-        </div>
-      </section>
-
-      <section class="panel panel-wide">
-        <div class="panel-head">
-          <div>
-            <p class="panel-kicker">Status</p>
-            <h2>Runtime, snapshots, logs</h2>
-          </div>
-          <div class="panel-actions">
-            <button class="ghost" id="copyResult">Copy latest JSON</button>
-          </div>
-        </div>
-
-        <div class="runtime-grid">
-          <div class="runtime-card">
-            <span>Runtime</span>
-            <pre id="runtimeJson">Loading...</pre>
-          </div>
-          <div class="runtime-card">
-            <span>Latest response</span>
-            <pre id="responseJson">No request yet.</pre>
-          </div>
-        </div>
-
-        <div class="section-divider"></div>
-
-        <div>
-          <div class="snapshots-head">
-            <div>
-              <p class="panel-kicker">Gallery</p>
-              <h3>Recent snapshots</h3>
             </div>
-            <span id="snapshotCount" class="muted">0 items</span>
+            <div class="button-group">
+              <button class="secondary" id="peerCheckBtn">Peer check</button>
+              <button class="secondary" id="loadSnapshotsBtn">Load snapshots</button>
+            </div>
           </div>
-          <div class="snapshot-grid" id="snapshotGrid"></div>
-        </div>
-      </section>
+        </details>
+      </aside>
     </main>
+
+    <section class="card lower">
+      <div class="lower-head">
+        <div>
+          <p class="section-kicker">Status</p>
+          <h2>Runtime & kết quả</h2>
+        </div>
+        <button class="ghost" id="copyResultBtn">Copy JSON</button>
+      </div>
+
+      <div class="runtime-grid">
+        <div class="json-card">
+          <span>Runtime</span>
+          <pre id="runtimeJson">Loading...</pre>
+        </div>
+        <div class="json-card">
+          <span>Latest response</span>
+          <pre id="responseJson">No request yet.</pre>
+        </div>
+      </div>
+
+      <div class="snapshots-head">
+        <div>
+          <p class="section-kicker">Gallery</p>
+          <h3>Recent snapshots</h3>
+        </div>
+        <span id="snapshotCount" class="muted">0 items</span>
+      </div>
+      <div class="snapshot-grid" id="snapshotGrid"></div>
+    </section>
   </div>
 
   <script src="/web/app.js"></script>

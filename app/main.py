@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
@@ -21,6 +21,7 @@ from app.services.camera import (
     parse_peer_endpoints,
     probe_camera,
     mark_ai_called,
+    stream_mjpeg_bytes,
     should_call_ai,
 )
 
@@ -100,6 +101,7 @@ async def runtime() -> dict[str, Any]:
             "id": settings.camera_id,
             "location": settings.camera_location,
             "stream_url_set": bool(settings.camera_stream_url),
+            "live_url": "/camera/live",
             "motion_threshold": settings.motion_threshold,
             "timeout": settings.camera_timeout,
         },
@@ -143,6 +145,17 @@ async def snapshots(limit: int = 12) -> dict[str, Any]:
 @app.get("/camera/check")
 async def camera_check() -> JSONResponse:
     return JSONResponse(content=probe_camera(settings))
+
+
+@app.get("/camera/live")
+async def camera_live() -> StreamingResponse:
+    if not settings.camera_stream_url:
+        return StreamingResponse(iter([b"CAMERA_STREAM_URL is not set"]), media_type="text/plain", status_code=503)
+    return StreamingResponse(
+        stream_mjpeg_bytes(settings.camera_stream_url),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
 
 
 @app.get("/camera/motion")
@@ -197,6 +210,7 @@ async def detect(payload: DetectRequest) -> Any:
                 payload_mode=settings.ai_payload_mode,
                 auth_header_name=settings.ai_auth_header_name,
                 auth_header_value=settings.ai_auth_header_value,
+                public_base_url=settings.public_base_url,
             )
             return forwarded
         except Exception:

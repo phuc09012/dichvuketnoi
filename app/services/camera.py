@@ -13,6 +13,7 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+import httpx
 from PIL import Image, ImageChops, ImageStat
 
 from app.config import Settings
@@ -102,6 +103,15 @@ def read_mjpeg_frames(url: str, timeout: float, count: int = 2, max_bytes: int =
     raise RuntimeError("Unable to extract enough JPEG frames from stream")
 
 
+async def stream_mjpeg_bytes(url: str) -> Any:
+    timeout = httpx.Timeout(connect=5.0, read=None, write=None, pool=None)
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with client.stream("GET", url, headers={"User-Agent": "CameraA2/1.0"}) as response:
+            response.raise_for_status()
+            async for chunk in response.aiter_bytes():
+                yield chunk
+
+
 def extract_image_size(jpeg_bytes: bytes) -> tuple[int | None, int | None]:
     with Image.open(BytesIO(jpeg_bytes)) as image:
         return image.width, image.height
@@ -151,6 +161,9 @@ def publish_camera_event(settings: Settings, event: dict[str, Any]) -> dict[str,
     client = mqtt.Client()
     if settings.mqtt_username:
         client.username_pw_set(settings.mqtt_username, settings.mqtt_password or None)
+    if settings.mqtt_broker_port == 8883:
+        client.tls_set()
+        client.tls_insecure_set(False)
 
     try:
         client.connect(settings.mqtt_broker_host, settings.mqtt_broker_port, keepalive=30)
