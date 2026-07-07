@@ -269,17 +269,23 @@ def build_trigger_payload(settings: Settings) -> dict[str, Any]:
         snapshot_path_value = probe.get("snapshot_path")
         if snapshot_path_value:
             image_base64 = encode_image_base64(Path(snapshot_path_value).read_bytes())
+    motion_detected = bool(probe.get("motion_detected"))
     event = {
         "status": "ok" if probe.get("ok") else "warning",
-        "event_type": "camera.motion.triggered" if probe.get("motion_detected") else "camera.motion.skipped",
+        "event_type": "camera.motion.triggered" if motion_detected else "camera.motion.skipped",
         "request_id": f"vision-request-{datetime.now().strftime('%Y%m%d-%H%M%S')}",
         "source_service": "team-camera",
         "camera_id": settings.camera_id,
         "timestamp": iso_now(),
         "location": settings.camera_location,
+        "motion_detected": motion_detected,
+        "motion_score": probe.get("motion_score", 0.0),
         "snapshot_url": snapshot_url,
         "image_base64": image_base64,
         "probe": probe,
     }
-    event["mqtt_publish"] = publish_camera_event(settings, event)
+    if motion_detected:
+        event["mqtt_publish"] = publish_camera_event(settings, event)
+    else:
+        event["mqtt_publish"] = {"ok": False, "message": "motion_not_detected"}
     return event
