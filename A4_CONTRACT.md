@@ -23,7 +23,7 @@ Mục đích:
 ### Detect ảnh
 
 ```http
-POST /api/v1/vision/detect
+POST /api/v1/detect
 ```
 
 ## 3. Request contract
@@ -132,7 +132,7 @@ $body = @{
 
 Invoke-RestMethod `
   -Method Post `
-  -Uri "http://<ip-a4>:8000/api/v1/vision/detect" `
+  -Uri "http://<ip-a4>:8000/api/v1/detect" `
   -ContentType "application/json" `
   -Headers @{ Authorization = "Bearer smart-campus-secret-token" } `
   -Body $body
@@ -158,9 +158,8 @@ Invoke-RestMethod `
 
 Hai nhóm thống nhất contract cuối cùng là:
 
-- `POST /api/v1/vision/detect`
+- `POST /api/v1/detect`
 - JSON payload
 - dùng `image_url`
 - response trả kết quả detect đồng bộ
 
-Nếu A4 đang nhận `file` thay vì `image_url`, đó là contract khác và phải sửa lại trước khi demo.

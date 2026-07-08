@@ -60,7 +60,11 @@ async def forward_detect_request(
     headers = {}
     if auth_header_name and auth_header_value:
         headers[auth_header_name] = auth_header_value
-    request_body: dict[str, Any] = {"timestamp": payload.timestamp.isoformat()}
+    request_body: dict[str, Any] = {
+        "camera_id": payload.camera_id,
+        "timestamp": payload.timestamp.isoformat(),
+        "location": payload.location,
+    }
     if payload_mode.lower() == "base64":
         image_base64 = payload.image_base64
         if not image_base64 and payload.snapshot_path:

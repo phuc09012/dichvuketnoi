@@ -6,6 +6,9 @@ const state = {
   monitorTimer: null,
   monitorBusy: false,
   autoSendBusy: false,
+  liveFallbackTimer: null,
+  motionAlertTimer: null,
+  motionAlertMode: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -21,6 +24,12 @@ const els = {
   publicBase: $("publicBase"),
   mqttBadge: $("mqttBadge"),
   motionBadge: $("motionBadge"),
+  motionAlert: $("motionAlert"),
+  motionAlertState: $("motionAlertState"),
+  motionAlertTitle: $("motionAlertTitle"),
+  motionAlertText: $("motionAlertText"),
+  motionAlertLink: $("motionAlertLink"),
+  motionAlertMeta: $("motionAlertMeta"),
   lastEvent: $("lastEvent"),
   snapshotImg: $("snapshotImg"),
   snapshotEmpty: $("snapshotEmpty"),
@@ -53,6 +62,14 @@ function setNotice(text, kind = "info") {
   els.noticeBar.classList.toggle("info", kind === "info");
 }
 
+function describeError(error) {
+  const message = String(error?.message || error || "");
+  if (message.toLowerCase().includes("timeout")) return "Request timeout, service phản hồi chậm.";
+  if (message.includes("404")) return "Không thấy API, có thể sai route hoặc service chưa bật.";
+  if (message.includes("503")) return "Service chưa sẵn sàng hoặc chưa cấu hình.";
+  return message || "Có lỗi không xác định.";
+}
+
 function setLatestSnapshot(url, label) {
   if (!url) {
     els.snapshotLink.textContent = "-";
@@ -63,6 +80,78 @@ function setLatestSnapshot(url, label) {
   els.snapshotLink.textContent = url;
   els.snapshotLink.href = url;
   els.lastEvent.textContent = label || "-";
+}
+
+function latestSnapshotUrl() {
+  const snap = state.runtime?.snapshots?.recent?.[0];
+  return snap?.public_url || snap?.url || null;
+}
+
+function liveStreamUrl() {
+  return state.runtime?.camera?.stream_url || "/camera/live";
+}
+
+function showFallbackSnapshot(reason) {
+  const fallbackUrl = latestSnapshotUrl();
+  if (!fallbackUrl || els.snapshotImg.src === fallbackUrl) return;
+  clearTimeout(state.liveFallbackTimer);
+  els.snapshotImg.src = fallbackUrl;
+  els.snapshotEmpty.style.display = "none";
+  els.snapshotImg.style.display = "block";
+  setStatus("Live unavailable", "error");
+  setNotice(reason || "Live stream chưa phản hồi, đang hiển thị snapshot gần nhất.", "error");
+  setLatestSnapshot(fallbackUrl, "Latest snapshot");
+}
+
+function showMotionAlert({ title, text, url, stateText, timeoutMs = 10000 } = {}) {
+  clearTimeout(state.motionAlertTimer);
+  els.motionAlert.hidden = false;
+  els.motionAlertState.textContent = stateText || "Motion detected";
+  els.motionAlertTitle.textContent = title || "Phát hiện chuyển động";
+  els.motionAlertText.textContent = text || "Hệ thống vừa ghi nhận chuyển động và đang xử lý tiếp.";
+  els.motionAlertLink.href = url || latestSnapshotUrl() || "#";
+  els.motionAlertLink.textContent = url ? "Open snapshot" : "Snapshot";
+  els.motionAlertMeta.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+  state.motionAlertMode = stateText || "Motion detected";
+  if (timeoutMs > 0) {
+    state.motionAlertTimer = setTimeout(() => {
+      els.motionAlert.hidden = true;
+      state.motionAlertMode = null;
+    }, timeoutMs);
+  }
+}
+
+function updateMotionAlert({ title, text, url, stateText } = {}) {
+  if (els.motionAlert.hidden) {
+    showMotionAlert({ title, text, url, stateText });
+    return;
+  }
+  if (stateText) {
+    els.motionAlertState.textContent = stateText;
+    state.motionAlertMode = stateText;
+  }
+  if (title) els.motionAlertTitle.textContent = title;
+  if (text) els.motionAlertText.textContent = text;
+  if (url) {
+    els.motionAlertLink.href = url;
+    els.motionAlertLink.textContent = "Open snapshot";
+  }
+  els.motionAlertMeta.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+}
+
+function scheduleMotionAlertHide(timeoutMs = 5000) {
+  clearTimeout(state.motionAlertTimer);
+  state.motionAlertTimer = setTimeout(() => {
+    hideMotionAlert();
+  }, timeoutMs);
+}
+
+function hideMotionAlert() {
+  clearTimeout(state.motionAlertTimer);
+  els.motionAlert.hidden = true;
+  els.motionAlertState.textContent = "Cleared";
+  els.motionAlertMeta.textContent = "--";
+  state.motionAlertMode = null;
 }
 
 function buildDetectPayload(trigger) {
@@ -81,17 +170,46 @@ function buildDetectPayload(trigger) {
   };
 }
 
+function buildManualTriggerFromLatestSnapshot() {
+  const fallback = state.runtime?.snapshots?.recent?.[0];
+  const snapshotUrl = fallback?.public_url || fallback?.url || latestSnapshotUrl();
+  if (!snapshotUrl) return null;
+  return {
+    request_id: `vision-request-${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}`,
+    camera_id: state.runtime?.camera?.id || "cam-gate-a",
+    timestamp: new Date().toISOString(),
+    location: state.runtime?.camera?.location || "Main Gate A",
+    motion_detected: true,
+    motion_score: 1.0,
+    snapshot_url: snapshotUrl,
+    snapshot_path: fallback?.path ? `snapshots/${fallback.path}` : null,
+  };
+}
+
 async function requestJson(url, options = {}) {
-  const response = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json") ? await response.json() : await response.text();
-  if (!response.ok) {
-    throw new Error(typeof payload === "string" ? payload : pretty(payload));
+  const controller = new AbortController();
+  const timeoutMs = options.timeoutMs ?? 12000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      signal: controller.signal,
+      ...options,
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const payload = contentType.includes("application/json") ? await response.json() : await response.text();
+    if (!response.ok) {
+      throw new Error(typeof payload === "string" ? payload : pretty(payload));
+    }
+    return payload;
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error(`Request timeout after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
   }
-  return payload;
 }
 
 function updateRuntime(runtime) {
@@ -99,7 +217,9 @@ function updateRuntime(runtime) {
   els.runtimeJson.textContent = pretty(runtime);
   els.localIp.textContent = runtime.local_ip || "-";
   els.cameraId.textContent = runtime.camera?.id || "-";
-  els.aiStatus.textContent = runtime.ai?.service_url || "-";
+  const a4Service = runtime.a4?.service_url || runtime.ai?.service_url || "-";
+  const a4Path = runtime.a4?.detect_path || runtime.ai?.detect_path || "/api/v1/detect";
+  els.aiStatus.textContent = `${a4Service}${a4Path.startsWith("/") ? "" : "/"}${a4Path}`;
   els.motionThreshold.textContent = runtime.camera?.motion_threshold ?? "-";
   els.cooldown.textContent = runtime.ai?.cooldown_seconds ?? "-";
   els.publicBase.textContent = runtime.network?.public_base_url || "-";
@@ -119,6 +239,9 @@ function updateRuntime(runtime) {
 async function loadRuntime() {
   const runtime = await requestJson("/api/runtime");
   updateRuntime(runtime);
+  if (!state.monitoring) {
+    els.snapshotImg.src = liveStreamUrl();
+  }
   return runtime;
 }
 
@@ -180,29 +303,50 @@ async function captureCamera() {
 async function runMotionScan() {
   setStatus("Scanning motion...", "ok");
   setNotice("Đang quét motion...", "info");
-  const result = await requestJson("/camera/motion");
+  const result = await requestJson("/camera/motion", { timeoutMs: 60000 });
   setResponse(result);
   if (result.snapshot_path) {
-    setLatestSnapshot(`/snapshots/${result.snapshot_path.replace(/\\/g, "/").replace(/^snapshots\//, "")}`, "camera.motion");
+    const snapshotUrl = `/snapshots/${result.snapshot_path.replace(/\\/g, "/").replace(/^snapshots\//, "")}`;
+    setLatestSnapshot(snapshotUrl, "camera.motion");
   }
   els.motionBadge.textContent = result.motion_detected
     ? `Motion: yes (${result.motion_score})`
     : `Motion: no (${result.motion_score})`;
+  if (result.motion_detected) {
+    showMotionAlert({
+      title: "Phát hiện chuyển động",
+      text: `Camera ${result.camera_id || state.runtime?.camera?.id || "-"} vừa ghi nhận motion score ${result.motion_score}.`,
+      url: result.snapshot_path ? `/snapshots/${String(result.snapshot_path).replace(/\\/g, "/").replace(/^snapshots\//, "")}` : latestSnapshotUrl(),
+    });
+    setNotice("Phát hiện chuyển động.", "success");
+  } else {
+    hideMotionAlert();
+    setNotice("Không phát hiện chuyển động.", "info");
+  }
   await loadRuntime();
 }
 
 async function sendToAi(triggerOverride = null) {
-  const trigger = triggerOverride || state.latestTrigger || await requestJson("/camera/trigger");
+  let trigger = triggerOverride || state.latestTrigger;
+  if (!trigger) {
+    trigger = buildManualTriggerFromLatestSnapshot();
+  }
+  if (!trigger) {
+    setNotice("Chưa có snapshot sẵn, đang chụp lại từ camera...", "info");
+    trigger = await requestJson("/camera/trigger", { timeoutMs: 90000 });
+    state.latestTrigger = trigger;
+  }
   const payload = buildDetectPayload(trigger);
-  setStatus("Sending to AI...", "ok");
-  setNotice("Đang gửi ảnh sang AI Vision...", "info");
-  const result = await requestJson("/detect", {
+  setStatus("Sending to A4...", "ok");
+  setNotice("Đang gửi ảnh sang A4 AI Vision, chờ phản hồi...", "info");
+  const result = await requestJson("/api/a4/detect", {
     method: "POST",
     body: JSON.stringify(payload),
+    timeoutMs: 60000,
   });
   setResponse(result);
   setStatus("Sent successfully", "ok");
-  setNotice("Đã gửi thành công sang AI Vision.", "success");
+  setNotice("Đã gửi thành công sang A4 AI Vision.", "success");
   return result;
 }
 
@@ -210,7 +354,7 @@ async function monitorMotionOnce() {
   if (state.monitorBusy) return;
   state.monitorBusy = true;
   try {
-    const result = await requestJson("/camera/motion");
+    const result = await requestJson("/camera/motion", { timeoutMs: 60000 });
     state.latestTrigger = result;
     setResponse(result);
     if (result.snapshot_path) {
@@ -221,19 +365,54 @@ async function monitorMotionOnce() {
       : `Motion: no (${result.motion_score})`;
     if (result.motion_detected) {
       setStatus("Motion detected", "ok");
-      setNotice("Phát hiện motion, đang gửi sang AI Vision...", "info");
+      setNotice("Phát hiện motion, đang gửi sang A4 AI Vision...", "info");
+      showMotionAlert({
+        stateText: "Motion detected",
+        title: "Phát hiện chuyển động",
+        text: `Camera ${result.camera_id || state.runtime?.camera?.id || "-"} vừa phát hiện chuyển động. Đang chuyển sang A4.`,
+        url: result.snapshot_path ? `/snapshots/${String(result.snapshot_path).replace(/\\/g, "/").replace(/^snapshots\//, "")}` : latestSnapshotUrl(),
+        timeoutMs: 0,
+      });
       if (!state.autoSendBusy) {
         state.autoSendBusy = true;
         try {
-          await sendToAi(result);
+          updateMotionAlert({
+            stateText: "SENDING",
+            title: "Đang gửi đến A4",
+            text: "Hệ thống đang chuyển ảnh sang nhóm A4 AI Vision...",
+            url: result.snapshot_path ? `/snapshots/${String(result.snapshot_path).replace(/\\/g, "/").replace(/^snapshots\//, "")}` : latestSnapshotUrl(),
+          });
+          const aiResult = await sendToAi(result);
+          updateMotionAlert({
+            stateText: "SUCCESS",
+            title: "Gửi thành công đến AI Vision",
+            text: `A4 AI Vision đã nhận ảnh và phản hồi với detection_id ${aiResult.detection_id || aiResult.request_id || "-"}.`,
+            url: result.snapshot_path ? `/snapshots/${String(result.snapshot_path).replace(/\\/g, "/").replace(/^snapshots\//, "")}` : latestSnapshotUrl(),
+          });
+          scheduleMotionAlertHide(7000);
+        } catch (error) {
+          updateMotionAlert({
+            stateText: "A4 error",
+            title: "Đã phát hiện motion nhưng gửi A4 lỗi",
+            text: String(error.message || error),
+            url: result.snapshot_path ? `/snapshots/${String(result.snapshot_path).replace(/\\/g, "/").replace(/^snapshots\//, "")}` : latestSnapshotUrl(),
+          });
+          setNotice("Phát hiện motion nhưng gửi sang A4 bị lỗi.", "error");
         } finally {
           state.autoSendBusy = false;
         }
       }
+    } else {
+      if (!state.autoSendBusy) {
+        hideMotionAlert();
+      }
+      setNotice("Không phát hiện chuyển động.", "info");
     }
   } catch (error) {
     setStatus("Request failed", "error");
-    setNotice("Không quét được motion.", "error");
+    setNotice(String(error.message || error).includes("timeout")
+      ? "Camera phản hồi chậm, thử lại sau."
+      : "Không quét được motion.", "error");
     setResponse({ error: String(error.message || error) });
   } finally {
     state.monitorBusy = false;
@@ -274,7 +453,7 @@ function wireButton(id, handler) {
       await handler();
     } catch (error) {
       setStatus("Request failed", "error");
-      setNotice("Có lỗi khi gửi hoặc gọi API.", "error");
+      setNotice(describeError(error), "error");
       setResponse({ error: String(error.message || error) });
     } finally {
       btn.disabled = false;
@@ -283,14 +462,23 @@ function wireButton(id, handler) {
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
-  els.snapshotImg.src = "/camera/live";
+  const fallbackToSnapshot = (reason) => {
+    const fallbackUrl = latestSnapshotUrl();
+    if (fallbackUrl) {
+      showFallbackSnapshot(reason);
+    } else {
+      els.snapshotEmpty.style.display = "grid";
+      els.snapshotEmpty.textContent = reason || "Live feed chưa tải được. Kiểm tra camera stream hoặc refresh lại trang.";
+    }
+  };
+
   els.snapshotImg.addEventListener("load", () => {
+    clearTimeout(state.liveFallbackTimer);
     els.snapshotImg.style.display = "block";
     els.snapshotEmpty.style.display = "none";
   });
   els.snapshotImg.addEventListener("error", () => {
-    els.snapshotEmpty.style.display = "block";
-    els.snapshotEmpty.innerHTML = "Live feed chưa tải được. Kiểm tra camera stream hoặc refresh lại trang.";
+    fallbackToSnapshot("Live feed chưa tải được. Kiểm tra camera stream hoặc refresh lại trang.");
   });
 
   wireButton("captureBtn", captureCamera);
@@ -305,17 +493,38 @@ document.addEventListener("DOMContentLoaded", async () => {
   wireButton("loadSnapshotsBtn", loadSnapshots);
   wireButton("copyResultBtn", copyJson);
 
-  try {
-    await loadRuntime();
-    await loadHealth();
-    await loadSnapshots();
-    setLatestSnapshot("/camera/live", "Live feed");
-    startLiveMonitor();
-  } catch (error) {
-    setStatus("Startup failed", "error");
-    setNotice("Không khởi động được dashboard.", "error");
-    setResponse({ error: String(error.message || error) });
-  }
+  setStatus("Loading dashboard...", "ok");
+  setNotice("Dashboard đang mở, các dữ liệu nạp sau trong nền.", "info");
+  hideMotionAlert();
+
+  loadRuntime()
+    .catch((error) => {
+      setStatus("Runtime unavailable", "error");
+      setNotice(describeError(error), "error");
+      setResponse({ error: `runtime: ${String(error.message || error)}` });
+    })
+    .then(() => {
+      if (state.runtime) {
+        els.snapshotImg.src = liveStreamUrl();
+        setLatestSnapshot(liveStreamUrl(), "Live feed");
+      }
+    });
+
+  loadHealth().catch((error) => {
+    setNotice(describeError(error), "error");
+  });
+
+  loadSnapshots().catch((error) => {
+    setNotice(`Snapshots chưa sẵn sàng: ${describeError(error)}`, "error");
+  });
+
+  startLiveMonitor();
+  state.liveFallbackTimer = setTimeout(() => {
+    const liveStillPending = els.snapshotImg.getAttribute("src") === liveStreamUrl() && !els.snapshotImg.naturalWidth;
+    if (liveStillPending) {
+      fallbackToSnapshot("Camera stream chưa phản hồi, đang hiển thị ảnh snapshot gần nhất.");
+    }
+  }, 7000);
 
   setInterval(() => {
     loadRuntime().catch(() => {});

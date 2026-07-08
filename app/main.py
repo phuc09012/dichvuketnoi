@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime, timezone
+import asyncio
 from typing import Any
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -101,6 +103,7 @@ async def runtime() -> dict[str, Any]:
             "id": settings.camera_id,
             "location": settings.camera_location,
             "stream_url_set": bool(settings.camera_stream_url),
+            "stream_url": settings.camera_stream_url or None,
             "live_url": "/camera/live",
             "motion_threshold": settings.motion_threshold,
             "timeout": settings.camera_timeout,
@@ -111,6 +114,11 @@ async def runtime() -> dict[str, Any]:
             "payload_mode": settings.ai_payload_mode,
             "auth_enabled": bool(settings.ai_auth_header_name and settings.ai_auth_header_value),
             "cooldown_seconds": settings.camera_cooldown_seconds,
+        },
+        "a4": {
+            "service_url": settings.a4_service_url,
+            "detect_path": settings.a4_detect_path,
+            "auth_enabled": bool(settings.ai_auth_header_name and settings.ai_auth_header_value),
         },
         "mqtt": {
             "enabled": settings.mqtt_enabled,
@@ -144,7 +152,8 @@ async def snapshots(limit: int = 12) -> dict[str, Any]:
 
 @app.get("/camera/check")
 async def camera_check() -> JSONResponse:
-    return JSONResponse(content=probe_camera(settings))
+    result = await asyncio.to_thread(probe_camera, settings)
+    return JSONResponse(content=result)
 
 
 @app.get("/camera/live")
@@ -160,12 +169,14 @@ async def camera_live() -> StreamingResponse:
 
 @app.get("/camera/motion")
 async def camera_motion() -> JSONResponse:
-    return JSONResponse(content=motion_probe_camera(settings))
+    result = await asyncio.to_thread(motion_probe_camera, settings)
+    return JSONResponse(content=result)
 
 
 @app.get("/camera/trigger")
 async def camera_trigger() -> JSONResponse:
-    return JSONResponse(content=build_trigger_payload(settings))
+    result = await asyncio.to_thread(build_trigger_payload, settings)
+    return JSONResponse(content=result)
 
 
 @app.post("/peer-check")
@@ -218,3 +229,44 @@ async def detect(payload: DetectRequest) -> Any:
         finally:
             mark_ai_called(payload.camera_id)
     return mock_detect(payload)
+
+
+@app.post("/api/a4/detect")
+async def a4_detect(payload: DetectRequest) -> Any:
+    if not settings.a4_service_url:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "error",
+                "message": "A4_SERVICE_URL is not configured",
+                "timestamp": utc_now(),
+            },
+        )
+
+    try:
+        a4_timeout = max(settings.http_timeout, 45.0)
+        forwarded = await asyncio.wait_for(
+            forward_detect_request(
+                settings.a4_service_url,
+                settings.a4_detect_path,
+                payload,
+                timeout=a4_timeout,
+                payload_mode="url",
+                auth_header_name=settings.ai_auth_header_name,
+                auth_header_value=settings.ai_auth_header_value,
+                public_base_url=settings.public_base_url,
+            ),
+            timeout=a4_timeout + 5.0,
+        )
+        return forwarded
+    except (TimeoutError, httpx.TimeoutException, httpx.RequestError):
+        return JSONResponse(
+            status_code=504,
+            content={
+                "status": "error",
+                "message": "A4 request timed out",
+                "camera_id": payload.camera_id,
+                "request_id": payload.request_id,
+                "timestamp": utc_now().isoformat(),
+            },
+        )

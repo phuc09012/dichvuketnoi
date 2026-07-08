@@ -26,6 +26,13 @@ except Exception:  # pragma: no cover - optional dependency
 logger = logging.getLogger(__name__)
 _LAST_AI_CALL_AT: dict[str, float] = {}
 
+_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://camera.labaiotdnu.app/",
+}
+
 
 @dataclass(frozen=True)
 class PeerStatus:
@@ -88,25 +95,43 @@ def _extract_jpegs_from_buffer(buffer: bytearray) -> list[bytes]:
     return frames
 
 
+def _stream_client(timeout: float) -> httpx.Client:
+    read_timeout = max(timeout, 12.0)
+    return httpx.Client(
+        timeout=httpx.Timeout(connect=timeout, read=read_timeout, write=timeout, pool=timeout),
+        follow_redirects=True,
+        headers=_BROWSER_HEADERS,
+    )
+
+
+def _async_stream_client(timeout: float) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(connect=timeout, read=None, write=timeout, pool=timeout),
+        follow_redirects=True,
+        headers=_BROWSER_HEADERS,
+    )
+
+
 def read_mjpeg_frames(url: str, timeout: float, count: int = 2, max_bytes: int = 5_000_000) -> list[bytes]:
-    request = Request(url, method="GET", headers={"User-Agent": "CameraA2/1.0"})
-    with urlopen(request, timeout=timeout) as response:
-        buffer = bytearray()
-        while len(buffer) < max_bytes:
-            chunk = response.read(8192)
-            if not chunk:
-                break
-            buffer.extend(chunk)
-            frames = _extract_jpegs_from_buffer(buffer)
-            if len(frames) >= count:
-                return frames[:count]
+    with _stream_client(timeout) as client:
+        with client.stream("GET", url) as response:
+            response.raise_for_status()
+            buffer = bytearray()
+            for chunk in response.iter_bytes():
+                if not chunk:
+                    continue
+                buffer.extend(chunk)
+                if len(buffer) >= max_bytes:
+                    break
+                frames = _extract_jpegs_from_buffer(buffer)
+                if len(frames) >= count:
+                    return frames[:count]
     raise RuntimeError("Unable to extract enough JPEG frames from stream")
 
 
 async def stream_mjpeg_bytes(url: str) -> Any:
-    timeout = httpx.Timeout(connect=5.0, read=None, write=None, pool=None)
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        async with client.stream("GET", url, headers={"User-Agent": "CameraA2/1.0"}) as response:
+    async with _async_stream_client(5.0) as client:
+        async with client.stream("GET", url) as response:
             response.raise_for_status()
             async for chunk in response.aiter_bytes():
                 yield chunk
@@ -188,6 +213,24 @@ def compute_motion_score(previous_jpeg: bytes, current_jpeg: bytes) -> float:
             return float(stat.mean[0] / 255.0)
 
 
+def _load_previous_snapshot(snapshot_dir: Path, camera_id: str, current_snapshot_path: Path) -> bytes | None:
+    camera_dir = snapshot_dir / camera_id
+    if not camera_dir.exists():
+        return None
+
+    candidates = []
+    for path in camera_dir.glob("*.jpg"):
+        if path.resolve() == current_snapshot_path.resolve():
+          continue
+        candidates.append(path)
+
+    if not candidates:
+        return None
+
+    previous_path = max(candidates, key=lambda item: item.stat().st_mtime)
+    return previous_path.read_bytes()
+
+
 def probe_camera(settings: Settings) -> dict[str, Any]:
     if not settings.camera_stream_url:
         return {
@@ -199,7 +242,7 @@ def probe_camera(settings: Settings) -> dict[str, Any]:
         }
 
     try:
-        jpeg_bytes = read_mjpeg_frames(settings.camera_stream_url, timeout=settings.camera_timeout, count=1)[0]
+        jpeg_bytes = read_mjpeg_frames(settings.camera_stream_url, timeout=settings.camera_timeout, count=2)[0]
     except Exception as exc:
         return {
             "ok": False,
@@ -234,7 +277,7 @@ def motion_probe_camera(settings: Settings) -> dict[str, Any]:
         }
 
     try:
-        frames = read_mjpeg_frames(settings.camera_stream_url, timeout=settings.camera_timeout, count=2)
+        frames = read_mjpeg_frames(settings.camera_stream_url, timeout=max(settings.camera_timeout, 20.0), count=2)
     except Exception as exc:
         return {
             "ok": False,
@@ -255,9 +298,13 @@ def motion_probe_camera(settings: Settings) -> dict[str, Any]:
 
     previous_frame, current_frame = frames[0], frames[1]
     width, height = extract_image_size(current_frame)
-    motion_score = compute_motion_score(previous_frame, current_frame)
-    motion_detected = motion_score >= settings.motion_threshold
     snapshot_path = save_snapshot(settings.snapshot_dir, settings.camera_id, current_frame)
+    motion_score = compute_motion_score(previous_frame, current_frame)
+    previous_snapshot_bytes = _load_previous_snapshot(settings.snapshot_dir, settings.camera_id, snapshot_path)
+    if previous_snapshot_bytes is not None:
+        previous_snapshot_score = compute_motion_score(previous_snapshot_bytes, current_frame)
+        motion_score = max(motion_score, previous_snapshot_score)
+    motion_detected = motion_score >= settings.motion_threshold
     return {
         "ok": True,
         "camera_id": settings.camera_id,
